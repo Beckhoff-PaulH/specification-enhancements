@@ -43,8 +43,8 @@ sub-issues [#15](https://github.com/margo/specification/issues/15) and
 
 | Acceptance criterion of #129 | Covered by |
 | --- | --- |
-| Standard authorization mechanisms for Helm packages, container images and Compose tar files | One answer form, a username and a secret, which the common runtimes accept (section 5) |
-| How the WFM receives and manages the tenant's credentials | Proposed to be out of scope, to be agreed: left to the WFM |
+| Standard authorization mechanisms for Helm packages, container images and Compose tar files | One answer form, a username and a secret, which the common runtimes accept (section 6) |
+| How the WFM receives and manages the tenant's credentials | Not covered by a rule. Proposed to be out of scope, to be agreed: it is not an interface between Margo components. Section 5 describes the responsibilities and the two ways (informative) |
 | How the WFM prepares the credentials for the edge device to pull | The route (section 3) and the rules (section 4) |
 | How the edge device stores the credentials | Not used after the expiry (section 3) and never in the deployment status (section 4). How it is kept until then is left to the implementation |
 
@@ -72,6 +72,10 @@ works as it is.
 
 No new principal, no new identity profile and no federation are introduced. The X.509-SVID is
 never presented to a registry.
+
+A registry credential is used by the two pullers to fetch artifacts. It is not handed to a workload
+and is not part of the desired state. Values that a workload itself consumes, such as a password or
+a connection string, are the subject of #145 and are not carried on this route.
 
 ### 2. Terms
 
@@ -265,7 +269,9 @@ sequenceDiagram
     W-->>C: 200 state manifest
     C->>W: GET /api/v1/registry-credentials
     W->>W: recognize the caller, collect the registries its deployments need
-    W->>R: where it issues credentials, obtain them (by the registry's own means)
+    opt the WFM has the registry issue credentials
+        W->>R: obtain them for this caller (by the registry's own means)
+    end
     W-->>C: 200 the complete credential set
     Note over C: replace the set it holds
     alt component in a public registry
@@ -303,7 +309,7 @@ A credential in the answer:
 
 - `expiresAt` bounds how long the WFM Client uses an entry. What the credential allows at the
   registry, and whether the registry itself stops accepting it then, depends on how the WFM
-  obtained it and is not fixed here (section 6.1). This proposal fixes no number for a lifetime.
+  obtained it and is not fixed here (section 7.1). This proposal fixes no number for a lifetime.
 - An entry is meant for both pullers: the WFM Client's pull of the component and the container
   runtime's pull of the images.
 
@@ -334,7 +340,40 @@ delay, and it MUST honor `Retry-After`.
 | `404`, `501` | The WFM does not offer the route. Credentials provisioned on the device apply, as today |
 | `429`, `5xx`, no answer | Keeps the entries that have not expired and retries with a growing delay |
 
-### 5. Use with common runtimes (informative)
+### 5. How a WFM comes to hold a credential (informative)
+
+This section adds no rule. It says who is responsible for what, so that the route of section 3 can
+be read in its context.
+
+| Party | Responsible for |
+| --- | --- |
+| Whoever runs the registry, for example an application vendor | Gives the operator access to the repositories. Whether and on which terms is entitlement and stays between the parties |
+| Operator | Makes sure the WFM holds what it needs for every private registry its deployments use |
+| WFM | Answers each WFM Client with the set for its deployments (section 4) |
+| WFM Client | Uses the set for both pullers (section 4) |
+
+A WFM can come to hold a credential in two ways. The WFM Client cannot tell them apart and does
+not need to.
+
+- **Stored and passed through.** The operator stores a credential for a registry in the WFM, and
+  the WFM hands it out unchanged. This works with every registry. The credential is long-lived,
+  and every WFM Client that needs the registry receives the same one.
+- **Issued for the caller.** The WFM holds an account at the registry that may create credentials,
+  and has the registry issue one for the calling WFM Client: pull-only, limited to repositories and
+  expiring, as far as the registry offers that. Registries offer it under different names, for
+  example robot accounts or scoped access tokens. The WFM then holds no credential that a device
+  ever sees, at the price of an integration for each kind of registry.
+
+When a WFM obtains a credential, on the request or ahead of it, and whether it keeps one for later
+requests, is left to it. What is fixed is the outcome: every `200` carries the complete set that
+is valid at that moment.
+
+A WFM knows the registries of the components from the deployments it assigned. The registries of
+the images are named inside the component, in the Compose file or in what a Helm chart renders, so
+a WFM has to read the component or be told them by the operator. That is why section 4 makes them
+a SHOULD.
+
+### 6. Use with common runtimes (informative)
 
 Read from the product documentation. None of it was run for this proposal.
 
@@ -348,9 +387,9 @@ Read from the product documentation. None of it was run for this proposal.
 A username and a secret fit all four. A runtime may pull an image again later, for example when a
 pod is rescheduled; the WFM Client has to hold a valid entry then.
 
-### 6. Security
+### 7. Security
 
-#### 6.1 What protects the credential
+#### 7.1 What protects the credential
 
 | Where | Protection |
 | --- | --- |
@@ -362,7 +401,7 @@ pod is rescheduled; the WFM Client has to hold a valid entry then.
 | In the WFM | Outside this proposal: how a WFM stores and guards the credentials it holds, and whether it passes one through, is its implementation and the operator's policy |
 | Between puller and registry | The registry's own TLS, validated against a web or enterprise PKI. This connection is outside MIAF; the X.509-SVID is never presented on it |
 
-#### 6.2 Revocation
+#### 7.2 Revocation
 
 Revocation follows MIAF. Where the WFM lists its clients one by one, removing a client from the
 accepted-client policy makes the next request fail, and its registry access ends when the entries
@@ -372,7 +411,7 @@ runs is not stopped by this proposal.
 
 A deployment that is withdrawn does not shorten a credential: it stays usable until it expires.
 
-#### 6.3 Threats
+#### 7.3 Threats
 
 | Attacker | Today, a login on the device | With this proposal |
 | --- | --- | --- |
@@ -390,7 +429,7 @@ registries as well. For a registry it does not control that is a long-lived cred
 tenant, which it exchanges by the registry's own means or, if the operator chose so, passes
 through.
 
-#### 6.4 Residual risks
+#### 7.4 Residual risks
 
 - A registry credential is a bearer secret and is not bound to the device. Whoever obtains it can
   use it from anywhere until it expires.
@@ -400,7 +439,7 @@ through.
   client.
 - Other local users of the container runtime may be able to use a credential that was passed to
   it.
-- How a credential reaches the container runtime is implementation-specific (section 5).
+- How a credential reaches the container runtime is implementation-specific (section 6).
 - A credential does not fix what is pulled. An image that a component names by a tag only can be
   replaced by whoever may push to its repository; a digest in the image reference prevents that,
   and this proposal does not require one.
